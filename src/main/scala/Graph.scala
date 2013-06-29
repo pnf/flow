@@ -65,10 +65,10 @@ import grizzled.slf4j.Logging
 }
 
 @serializable class EdgeUpdate(val id:EdgeId, val value:EdgeVal) {
+  override def toString = "%02d, %02d, a=%6.2f b=%6.2f x=%6.2f".format(id.i,id.j,value.a,value.b,value.x)
 }
 
-@serializable class Vertex(ii:Int, ee:Seq[Edge]) {
-  val i = ii
+@serializable class Vertex(val i:Int, ee:Seq[Edge]) {
   val edges : Array[Edge] = ee.toArray
   val direction = edges.map {e => if(e.j==i) 1.0 else -1.0}  // incoming +1, outgoing -1
 
@@ -83,7 +83,6 @@ import grizzled.slf4j.Logging
 
   private val cr = "\n"
   def flow = edges.zip(direction).map(_ match {case (e,d)=>e.x*d} ).sum
-
 
   override def toString = "i=" + i + " n=" +  edges.size + " flow=" +flow;
 }

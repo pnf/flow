@@ -43,6 +43,4 @@ object Demo  extends App  {
 			  imbalance_gain)
   solver.solve(sc)
 
-  println(g.edges.mkString("\n"))
-
 }

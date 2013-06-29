@@ -39,7 +39,7 @@ import Solver._
   for(j<-0 until v.edges.size; k<-0 until v.edges.size) {
     S0(j,k) = v.direction(j)*v.direction(k)
   }
-  val edgeId2Edge = v.edges.map(e => (new EdgeId(e), e)).toMap
+  val edgeId2EdgePos = v.edges.map(new EdgeId(_)).zipWithIndex.toMap
 }
 
 @serializable
@@ -143,60 +143,52 @@ class Solver(g : Graph, n_iter:Int,
     val vvp = sc.parallelize(vv).cache()
     val bg = sc.broadcast(g)
 
-    val edgePairs = vvp.flatMap(vc => {
-      rebalanceFlows(vc);
-      adjustCosts(vc);
-      vc.v.edges.map(edgePair(_))
-    })
+    for(i <- 1 to n_iter) {
 
-    val edgeGroups = edgePairs.groupByKey()  // ==>    [ (EdgeID, [EdgeVal,...] ),...]
+      val edgePairs = vvp.flatMap(vc => {
+        rebalanceFlows(vc);
+        adjustCosts(vc);
+        vc.v.edges.map(edgePair(_))
+      })
 
-    val updatedEdges = edgeGroups.map( p => { //   ==> [ (EdgeID, EdgeVal),...]
-      val eid=p._1; val evs=p._2
-      var a=0.0; var b=0.0; var x=0.0;
-      for(ev<-evs) {a+=ev.a; b+=ev.b; x+=ev.x}
-      a/=evs.size; b/=evs.size; x/=evs.size
-      (eid,new EdgeVal(a,b,x))
-    })
+      val edgeGroups = edgePairs.groupByKey()  // ==>    [ (EdgeID, [EdgeVal,...] ),...]
 
-    // [ [EdgeUpdate, ...]),...]
-    val virtexUpdatedEdges : spark.RDD[Seq[EdgeUpdate]] = updatedEdges.flatMap( p => { 
-      val eid=p._1; val ev=p._2
-      val eu = new EdgeUpdate(eid,ev)
-      bg.value.edgeId2VertexIndices(eid).map( (_,eu) )
-    }).groupByKey().sortByKey().map(p => p._2)
+      val updatedEdges = edgeGroups.map( p => { //   ==> [ (EdgeID, EdgeVal),...]
+        val eid=p._1; val evs=p._2
+        var a=0.0; var b=0.0; var x=0.0;
+        for(ev<-evs) {a+=ev.a; b+=ev.b; x+=ev.x}
+        a/=evs.size; b/=evs.size; x/=evs.size
+        (eid,new EdgeVal(a,b,x))
+      })
 
+      // [ [EdgeUpdate, ...]),...]
+      val vertexUpdatedEdges : spark.RDD[Seq[EdgeUpdate]] = updatedEdges.flatMap( p => {
+        val eid=p._1; val ev=p._2
+        val eu = new EdgeUpdate(eid,ev)
+        bg.value.edgeId2VertexIndices(eid).map( (_,eu) )
+      }).groupByKey().sortByKey().map(p => p._2)
 
-    val bleh = vvp.zip(virtexUpdatedEdges)
+      // vertexUpdatedEdges.foreach(a => a.foreach(println(_)))
 
-
-    bleh.foreach( p => {
-      val vc : VertexCache = p._1
-      val eus : Seq[EdgeUpdate] = p._2
+      val bleh = vvp.zip(vertexUpdatedEdges)  // [(VertexCache,[EdgeUpdate,...]),..]
+      bleh.foreach( p => {
+        val vc : VertexCache = p._1
+        val eus : Seq[EdgeUpdate] = p._2
         eus.map( eu => {
-          val e : Edge = vc.edgeId2Edge(eu.id)
+          val i  =vc.edgeId2EdgePos(eu.id)
+          val e : Edge = vc.v.edges(i)
           e.a = eu.value.a
           e.b = eu.value.b
           e.x = eu.value.x
+          // println("*** setting " + vc.v.edges(i))
+        })
       })
-    })
-
-
-    //val edges = g.edges
-
-    //val distv = sc.parallelize(vertices)
-    val distv = vertices
-
-    for(i <- 1 to n_iter) {
-      distv.foreach(rebalanceFlows)
-      distv.foreach(adjustCosts)
-      val cr = "\n"
-      //logger.debug(s"Iteration $i:\n${edges.mkString(cr)}\n${vertices.mkString(cr)}")
-      //logger.debug("Iteration " + i +"\n" + edges.mkString(cr) + "\n" + vertices.mkString(cr))
-      //logger.debug(s"Total: target=${edges.map(e=>e.target).sum} flow=${edges.map(e=>e.x).sum} cost=${edges.map(e=>e.a*(e.x-e.b)*(e.x-e.b)).sum}")
     }
-  }
 
+    val finalEdges : Seq[Edge] = vvp.flatMap(vc => vc.v.edges).map(e => (new EdgeId(e),e)).reduceByKey( (v1,v2) => v1).map(p => p._2).toArray()
+    println(finalEdges.mkString("\n"))
+
+  }
 
 }
 
