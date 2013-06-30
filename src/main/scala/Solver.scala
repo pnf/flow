@@ -11,27 +11,9 @@ import spark.SparkContext._
 import spark.AccumulatorParam
 import scala.collection.TraversableOnce
 
-object Solver {
   // Class to accumulate edge data
   @serializable class EdgeSet(val edges: HashSet[Edge]) {
   }
-  // This crap is necessary to use accumulators
-  implicit object EdgeSetAP extends AccumulatorParam[EdgeSet] {
-    def zero(es: EdgeSet) = new EdgeSet(new HashSet[Edge]())
-    def addInPlace(es1:EdgeSet, es2:EdgeSet) : EdgeSet = {
-      es2.edges ++= es1.edges
-      return es1
-    }
-  }
-
-  def edgePair(e:Edge) : (EdgeId,EdgeVal) = {
-    val id = new EdgeId(e)
-    val value = new EdgeVal(e)
-    return (id,value)
-  }
-}
-import Solver._
-
 
 @serializable class VertexCache(val v:Vertex) {
   val S : DenseMatrix[Double] = DenseMatrix.zeros[Double](v.edges.size,v.edges.size)
@@ -43,10 +25,21 @@ import Solver._
   val edgeId2EdgePos = v.edges.map(new EdgeId(_)).zipWithIndex.toMap
 }
 
+object Solver {
+  // This crap is necessary to use accumulators
+  implicit object EdgeSetAP extends AccumulatorParam[EdgeSet] {
+    def zero(es: EdgeSet) = new EdgeSet(new HashSet[Edge]())
+    def addInPlace(es1:EdgeSet, es2:EdgeSet) : EdgeSet = {
+      es2.edges ++= es1.edges
+      return es1
+    }
+  }
+}
+
 @serializable
-class Solver(g : Graph, n_iter:Int,
-	     beta_cost: Double, beta_flow: Double, 
-	     imbalance_gain : Double ) {
+class Solver(val g : Graph, val n_iter:Int,
+  val beta_cost: Double, val beta_flow: Double,
+  val imbalance_gain : Double ) {
 
   def rebalanceFlows(v:VertexCache) {
     val i = v.v.i
@@ -119,7 +112,6 @@ class Solver(g : Graph, n_iter:Int,
 
     // Wrap up vertices in a container that also holds linear algebra state
     val vertexCache = g.vertices.map(new VertexCache(_))
-
     // Parallelize the vertices on spark, and mark them as a persistent cache.
     val vertices = sc.parallelize(vertexCache).cache()
 
@@ -132,7 +124,7 @@ class Solver(g : Graph, n_iter:Int,
       def vertexToRebalancedEdges(vc:VertexCache) : Seq[(EdgeId,EdgeVal)] = {
         rebalanceFlows(vc);
         adjustCosts(vc);
-        vc.v.edges.map(edgePair(_))
+        vc.v.edges.map(e => (new EdgeId(e),new EdgeVal(e)))
       }
 
       // Create list of all updated edges.
@@ -151,28 +143,26 @@ class Solver(g : Graph, n_iter:Int,
         a/=evs.size; b/=evs.size; x/=evs.size
         new EdgeVal(a,b,x)
       }
-
-      // Create list of consolidated, nondegenerate (EdgeId,EdgeVal) pairs
+      // Seq[(EdgeId,Seq[EdgeVal]] => Seq[(EdgeId,EdgeVal)]
       val updatedEdges : spark.RDD[(EdgeId,EdgeVal)] =
-        edgeGroups.map( p => (p._1,consolidateEdgeUpdates(p._2)))
+        edgeGroups.mapValues(consolidateEdgeUpdates(_))
 
       // Distribute the edge update pair out to the relevant vertices.
       // Note that we _must_ pass in the broadcast variabl bg, since it will
       // otherwise have null value remotely.
       def distributeEdgeUpdate(bg:spark.broadcast.Broadcast[Graph],
-        eid:EdgeId, ev: EdgeVal) : Set[(Int,EdgeUpdate)] = {
+                               eid:EdgeId, ev: EdgeVal) : Set[(Int,EdgeUpdate)] = {
         val eu = new EdgeUpdate(eid,ev)
         bg.value.edgeId2VertexIndices(eid).map( (_,eu) )
       }
       // Create ordered list of edge update sets for each vertex
+      // Seq[(EdgeId,EdgeVal)] => Seq[Seq[EdgeUpdate]]
       val vertexUpdatedEdges : spark.RDD[Seq[EdgeUpdate]] = 
         updatedEdges
           .flatMap( p => distributeEdgeUpdate(bg,p._1,p._2))  // Seq[(Int,EdgeUpdate)]
           .groupByKey()           // Seq[(Int,Seq[EdgeUpdate])]
           .sortByKey()
           .map(p => p._2)	  // Seq[Seq[EdgeUpdate]]
-
-
 
       def applyEdgeUpdatesToVertex(vc:VertexCache, eus:Seq[EdgeUpdate]) {
         eus.foreach( eu => {
