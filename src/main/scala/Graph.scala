@@ -58,10 +58,12 @@ import grizzled.slf4j.Logging
     case e : EdgeId => i==e.i && j==e.j
     case _ => false}
   override def hashCode = i.hashCode ^ j.hashCode
+  override def toString = "i=" +i+ ", j="+j
 }
 @serializable class EdgeVal(val a: Double, val b: Double, val x:Double) {
   def this(e:Edge) = this(e.a,e.b,e.x)
   def add(e:Edge) = new EdgeVal(a+e.a,b+e.b,x+e.x)
+  override def toString = "a="+a+",b="+b+",x="+x
 }
 
 @serializable class EdgeUpdate(val id:EdgeId, val value:EdgeVal) {
