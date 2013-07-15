@@ -110,10 +110,14 @@ class Solver(val g : Graph, val n_iter:Int,
   
   def solve(sc: SparkContext) {
 
-    // Wrap up vertices in a container that also holds linear algebra state
-    val vertexCache = g.vertices.map(new VertexCache(_))
+    // Wrap up vertices in a container that also holds linear algebra state.
+    // val vertexCache = g.vertices.map(new VertexCache(_))
+
     // Parallelize the vertices on spark, and mark them as a persistent cache.
-    val vertices = sc.parallelize(vertexCache).cache()
+    // val vertices = sc.parallelize(vertexCache).cache()
+
+    var vertices : spark.RDD[(Int,VertexCache)] = 
+      sc.parallelize(g.vertices.zipWithIndex.map(_.swap)).mapValues(new VertexCache(_))
 
     // Broadcast the topology of the graph as read-only data
     val bg = sc.broadcast(g)
@@ -133,38 +137,36 @@ class Solver(val g : Graph, val n_iter:Int,
       // with different EdgeVals in this list.
       // 
       // So group the multiple edgevalues by edge id:
-      val edgeGroups : spark.RDD[(EdgeId,Seq[EdgeVal])] =
-        vertices.flatMap(vertexToRebalancedEdges).groupByKey()
+      val edgeGroups : spark.RDD[(EdgeId,Seq[(Int,EdgeVal)])  ] =
+        vertices.flatMapValues(vertexToRebalancedEdges)        // still indexed by i_vert
+                .map {case (i,(eid,ev)) => (eid,(i,ev)) }      // [(eid,(i,v)]
+                .groupByKey                                    // [(eid,[(i,v)])]
+
+      def invert[A,B](sab:Seq[(A,B)]) : (Seq[A],Seq[B]) = {
+        (sab.map(_._1),sab.map(_._2))  }
 
       // Consolidate multiple updates for an edge into a single update
-      def consolidateEdgeUpdates(evs:Seq[EdgeVal]) : EdgeVal = {
+      // [(i,ev)] => (ev,[i])
+      def consolidateEdgeUpdates(evs:Seq[(Int,EdgeVal)]) : (EdgeVal,Seq[Int]) = {
         var a=0.0; var b=0.0; var x=0.0;
-        for(ev<-evs) {a+=ev.a; b+=ev.b; x+=ev.x}
+        for((i,ev)<-evs) {a+=ev.a; b+=ev.b; x+=ev.x}
         a/=evs.size; b/=evs.size; x/=evs.size
-        new EdgeVal(a,b,x)
+        (new EdgeVal(a,b,x), evs.map(_._1))
       }
-      // Seq[(EdgeId,Seq[EdgeVal]] => Seq[(EdgeId,EdgeVal)]
-      val updatedEdges : spark.RDD[(EdgeId,EdgeVal)] =
-        edgeGroups.mapValues(consolidateEdgeUpdates(_))
 
-      // Distribute the edge update pair out to the relevant vertices.
-      // Note that we _must_ pass in the broadcast variabl bg, since it will
-      // otherwise have null value remotely.
-      def distributeEdgeUpdate(bg:spark.broadcast.Broadcast[Graph],
-                               eid:EdgeId, ev: EdgeVal) : Set[(Int,EdgeUpdate)] = {
-        val eu = new EdgeUpdate(eid,ev)
-        bg.value.edgeId2VertexIndices(eid).map( (_,eu) )
-      }
+      // [(eid,[(i,ev)])]  ==> [eid, (ev, [i])]
+      val updatedEdges : spark.RDD[(EdgeId,(EdgeVal,Seq[Int]))] =
+        edgeGroups.mapValues(consolidateEdgeUpdates)
+
       // Create ordered list of edge update sets for each vertex
-      // Seq[(EdgeId,EdgeVal)] => Seq[Seq[EdgeUpdate]]
-      val vertexUpdatedEdges : spark.RDD[Seq[EdgeUpdate]] = 
-        updatedEdges
-          .flatMap( p => distributeEdgeUpdate(bg,p._1,p._2))  // Seq[(Int,EdgeUpdate)]
-          .groupByKey()           // Seq[(Int,Seq[EdgeUpdate])]
-          .sortByKey()
-          .map(p => p._2)	  // Seq[Seq[EdgeUpdate]]
+      // [(eid, (ev,[i])) ] ==> [(i,[eu])]
+      val vertexUpdatedEdges : spark.RDD[(Int,Seq[EdgeUpdate])] = 
+        updatedEdges                                          // [(eid, (ev,[i]))]
+          .flatMap {case (eid,(ev,is)) =>                           
+                      is.map( (_,new EdgeUpdate(eid,ev))) }   // [(i, eu)]
+          .groupByKey                                         // [(i, [eu])]
 
-      def applyEdgeUpdatesToVertex(vc:VertexCache, eus:Seq[EdgeUpdate]) {
+      def applyEdgeUpdatesToVertex(vc:VertexCache, eus:Seq[EdgeUpdate]) = {
         eus.foreach( eu => {
           val i = vc.edgeId2EdgePos(eu.id)
           val e : Edge = vc.v.edges(i)
@@ -172,15 +174,23 @@ class Solver(val g : Graph, val n_iter:Int,
           e.b = eu.value.b
           e.x = eu.value.x
         })
+        vc
       }
-      // Apply updates to every vertex
-      vertices
-        .zip(vertexUpdatedEdges)
-        .foreach( p => applyEdgeUpdatesToVertex(p._1,p._2))
+
+      vertices = 
+        vertices.join(vertexUpdatedEdges)                             // [(i,(vc,[eu]))]
+                 .mapValues {case (vc:VertexCache,eus:Seq[EdgeUpdate]) =>
+                        applyEdgeUpdatesToVertex(vc,eus)}
 
     }
 
-    val finalEdges : Seq[Edge] = vertices.flatMap(vc => vc.v.edges).map(e => (new EdgeId(e),e)).reduceByKey( (v1,v2) => v1).map(p => p._2).toArray()
+    val finalEdges : Array[Edge] =
+      vertices                                                // [(i,vc)]
+        .values                                               // [vc]
+        .flatMap (_.v.edges.map(e=>(new EdgeId(e),e)))        // [(eid,e)]
+        .reduceByKey((e1,e2)=>e1)                             // [(eid,e)]
+        .values.toArray                                       // [e]
+
     println(finalEdges.mkString("\n"))
 
   }

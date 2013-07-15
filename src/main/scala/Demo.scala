@@ -11,9 +11,13 @@ import SparkContext._
 
 object Demo  extends App  {
 
-  val jars = List("/Users/pnf/dev/flow/target/scala-2.9.2/flow_2.9.2-1.0.jar")
+  val jars = List("./flow-assembly-1.0.jar")
   val env = new HashMap[String,String]()
-  val sc = new SparkContext("local", "Simple Job", "/Users/pnf/dist/spark-0.7.2",jars,env)
+  val cluster = "spark://ec2-54-225-47-77.compute-1.amazonaws.com:7077"
+  // val cluster = "local"
+  val sparkloc = "/root/spark"
+  // val sparkloc = "/Users/pnf/dist/spark-0.7.2"
+  val sc = new SparkContext(cluster, "Simple Job", sparkloc ,jars,env)
       
   // create big random graph.
   // every edge should be connected to someone
@@ -24,7 +28,7 @@ object Demo  extends App  {
   val source_gain = 100.0
   val n_iter = 20
 
-/*
+
   val edges = new HashSet[Edge]()
   edges.add(new Edge(-1,0,target=10.0,gain=source_gain))
   edges.add(new Edge(-1,1,target=(-3.0),gain=source_gain))
@@ -32,11 +36,15 @@ object Demo  extends App  {
   edges.add(new Edge(0,1,target=0.0,gain=default_gain))
   edges.add(new Edge(0,2,target=0.0,gain=default_gain))
   val g = new Graph(edges)
-*/
 
+
+/*
   val g = Graph.random(10,2,3,
 		       10.0,5.0,
 		       default_gain, source_gain)
+ */
+
+  // val g = Graph.fromFile("/Users/pnf/dev/flow/tee.csv")
 
   val solver = new Solver(g, n_iter,
 			  beta_cost, beta_flow,

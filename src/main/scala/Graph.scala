@@ -6,7 +6,7 @@ import scala.util.Random
 //import com.typesafe.scalalogging.slf4j.Logging
 import grizzled.slf4j.Logging
 
-@serializable class Graph(val edges: HashSet[Edge]) extends Logging {
+@serializable class Graph(val edges: scala.collection.Set[Edge]) extends Logging {
 
   val vertices : Array[Vertex]= {
     val n_vertices = edges.map(e=>math.max(e.i,e.j)).reduce(math.max(_,_)) + 1
@@ -90,6 +90,23 @@ import grizzled.slf4j.Logging
 }
   
 object Graph {
+
+  def fromFile(file : String, default_gain: Double=0.0, source_gain:Double=0.0)
+      : Graph = {
+    import com.github.tototoshi.csv.CSVReader
+    val reader = CSVReader.open(file).toStream
+    val edges = for(ll <- reader) yield {
+      val li = ll.iterator
+      val i = li.next().trim.toInt
+      val j = li.next().trim.toInt
+      val target = if(li.hasNext) li.next().trim.toDouble else 0.0
+      val gain =
+        if(li.hasNext) {li.next.trim.toDouble}
+        else {if(i>=0 && j>=0) default_gain else source_gain}
+      new Edge(i,j,target,gain)
+    }
+    new Graph(edges.toSet)
+  }
 
   def random(n_vertices:Int, min_degree:Int, avg_degree:Int,
 	   total_source:Double, max_indiv_source:Double,
